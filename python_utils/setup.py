@@ -14,8 +14,8 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='harshal',
-    maintainer_email='harshal@todo.todo',
-    description='TODO: Package description',
+    maintainer_email='harshaldawar@gmail.com',
+    description='General Python based utilities',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -24,6 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'topic_rate_prober = python_utils.topic_rate_prober:main',
+            'random_pubs = python_utils.random_pubs:main'
         ],
     },
 )
