@@ -5,12 +5,15 @@ from rosidl_runtime_py.utilities import get_message
 import time
 import os
 from functools import partial
+import sys
+import math
 
 class TopicSniffer(Node):
   def __init__(self):
     super().__init__('topic_sniffer')
     self.topic_subs = {}   # {topic_name: subscription}
     self.topic_stats = {}  # {topic_name: [timestamps]}
+    self.topic_sizes = {}  # {topic_name: [size_bytes]}
     self.first_display = True
     self.refresh_timer = self.create_timer(2.0, self.update_subscriptions)
     self.rate_timer = self.create_timer(1.0, self.display_rates)
@@ -47,6 +50,7 @@ class TopicSniffer(Node):
       # Updated: store directly in dict
       self.topic_subs[name] = subscription
       self.topic_stats[name] = []
+      self.topic_sizes[name] = []
 
       print(f":white_check_mark: Subscribed to: {name:<30} [{topic_type}]")
 
@@ -61,6 +65,18 @@ class TopicSniffer(Node):
     while timestamps and timestamps[0] < cutoff:
       timestamps.pop(0)
 
+    # Convert msg to serialized form (ROS2 standard)
+    try:
+      size_bytes = sys.getsizeof(msg)
+    except Exception:
+      size_bytes = 0
+
+    sizes = self.topic_sizes.get(topic_name, [])
+    sizes.append(size_bytes)
+
+    while sizes and len(sizes) > len(timestamps):
+      sizes.pop(0)
+
   def display_rates(self):
     """Compute and display formatted message rates with color highlighting."""
     if not self.topic_stats:
@@ -72,7 +88,7 @@ class TopicSniffer(Node):
     # Header for the display
     topic_col_width = max((len(name) for name in self.topic_stats.keys()), default=10)
     topic_col_width = min(topic_col_width, 100)  # cap width
-    header = f"{'Topic Name':<{topic_col_width}} {'Rate (Hz)':>10} {'Msgs':>8} {'Window (s)':>10}"
+    header = f"{'Topic Name':<{topic_col_width}} {'Rate (Hz)':>10} {'Msgs':>8}  {'MB/s':>10} {'Window (s)':>10} {'Histogram <--':>12}"
     output.append(header)
     output.append("-" * (topic_col_width + 40))  # line separator
 
@@ -106,8 +122,39 @@ class TopicSniffer(Node):
       # Truncate very long names neatly
       display_name = topic_name if len(topic_name) <= topic_col_width else topic_name[:topic_col_width - 3] + '...'
 
+      total_bytes = sum(self.topic_sizes.get(topic_name, []))
+      mb_per_sec = (total_bytes / 1e6) / duration if n > 1 else 0.0
+      mb_str = f"{mb_per_sec:>10.3f}"
+
+      hist = ""
+      if n > 1:
+        # Convert timestamps to per-message intervals
+        intervals = [timestamps[i] - timestamps[i - 1] for i in range(1, n)]
+        if intervals:
+          # Normalize intervals to 8 sparkline levels
+          spark = "▁▂▃▄▅▆▇█"
+          imin, imax = min(intervals), max(intervals)
+
+          # Avoid division by zero when all intervals identical
+          if imax == imin:
+            hist = spark[-1] * min(len(intervals), 10)
+          else:
+            bins = intervals[-10:]  # last 10 intervals (recent activity)
+            hist = ""
+            for iv in bins:
+              norm = (iv - imin) / (imax - imin)
+              idx = int(norm * (len(spark) - 1))
+              hist += spark[idx]
+
+          # Pad to length 10 if fewer bins
+          hist = hist.rjust(10, spark[0])
+        else:
+          hist = "." * 10
+      else:
+        hist = "." * 10
+
       # Append the formatted line to the output
-      output.append(f"{display_name:<{topic_col_width}} {rate_str} {n:>8} {dur_str}")
+      output.append(f"{display_name:<{topic_col_width}} {rate_str} {n:>8} {mb_str} {dur_str} {hist}")
 
     output.append("=" * (topic_col_width + 40))  # final separator line
 
