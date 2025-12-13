@@ -8,6 +8,12 @@ from functools import partial
 import sys
 import math
 
+import termios
+import tty
+import select
+import atexit
+
+
 class TopicSniffer(Node):
   def __init__(self):
     super().__init__('topic_sniffer')
@@ -17,6 +23,12 @@ class TopicSniffer(Node):
     self.first_display = True
     self.refresh_timer = self.create_timer(2.0, self.update_subscriptions)
     self.rate_timer = self.create_timer(1.0, self.display_rates)
+
+    self.setup_terminal()
+    self.key_timer = self.create_timer(0.1, self.handle_keys)
+    self.exit_timer = self.create_timer(0.1, self.check_exit)
+    self._exit_requested = False
+
     print("\n:sleuth_or_spy: Starting dynamic topic sniffer with live rate display...\n")
 
   def update_subscriptions(self):
@@ -161,8 +173,56 @@ class TopicSniffer(Node):
     # Print the output in a way that overwrites the old data
     print("\033[H\033[J", end="")
     print("\n".join(output))
+    footer = (
+      "\n"
+      " Keys: "
+      "\033[1mESC\033[0m Quit   "
+      "\033[1mCtrl+C\033[0m Force Quit   "
+      "\033[1m↻\033[0m Auto-refresh\n"
+    )
+    print(footer)
     print("\nPress Ctrl+C to exit.\n")
 
+
+  def setup_terminal(self):
+    """Put terminal into raw mode for key reading."""
+    self.stdin_fd = sys.stdin.fileno()
+    self.old_term_settings = termios.tcgetattr(self.stdin_fd)
+    tty.setcbreak(self.stdin_fd)
+
+    atexit.register(self.restore_terminal)
+
+  def restore_terminal(self):
+    """Restore terminal settings on exit."""
+    if hasattr(self, "old_term_settings"):
+        termios.tcsetattr(
+            self.stdin_fd,
+            termios.TCSADRAIN,
+            self.old_term_settings
+        )
+        del self.old_term_settings
+
+  def poll_keyboard(self):
+    """Check for keypresses without blocking."""
+    dr, _, _ = select.select([sys.stdin], [], [], 0)
+    if dr:
+      ch = sys.stdin.read(1)
+      return ch
+    return None
+  
+  def handle_keys(self):
+    key = self.poll_keyboard()
+    if not key or self._exit_requested:
+      return
+
+    # ESC key
+    if key == '\x1b':
+      print("\nESC pressed — exiting.")
+      self._exit_requested = True
+
+  def check_exit(self):
+    if self._exit_requested:
+      rclpy.shutdown()
 
 def main(args=None):
   DISTRO = os.getenv("ROS_DISTRO")
@@ -180,9 +240,8 @@ def main(args=None):
   except KeyboardInterrupt:
     pass
   finally:
-    # Updated: simpler cleanup (safe on Humble and Jazzy)
-    node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+      rclpy.shutdown()
 
 if __name__ == '__main__':
   main()
