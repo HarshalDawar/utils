@@ -29,6 +29,12 @@ class TopicSniffer(Node):
     self.exit_timer = self.create_timer(0.1, self.check_exit)
     self._exit_requested = False
 
+    # Filter state
+    self.filter_text = None  # Will hold the search term (e.g., "abc")
+    self.filter_invert = False  # Whether to invert the search (e.g., "!abc")
+    self.filter_refresh_needed = False  # Flag to indicate if refresh is needed
+    self.filter_editing = False
+
     print("\n:sleuth_or_spy: Starting dynamic topic sniffer with live rate display...\n")
 
   def update_subscriptions(self):
@@ -106,6 +112,13 @@ class TopicSniffer(Node):
 
     # Body of the display (for each topic)
     for topic_name, timestamps in sorted(self.topic_stats.items()):
+      # Apply filter to topics
+      if self.filter_text:
+        if self.filter_invert and self.filter_text in topic_name:
+          continue  # Skip topic if it matches the filter and is inverted
+        elif not self.filter_invert and self.filter_text not in topic_name:
+          continue  # Skip topic if it doesn't match the filter
+
       n = len(timestamps)
 
       if n > 1:
@@ -178,10 +191,13 @@ class TopicSniffer(Node):
       " Keys: "
       "\033[1mESC\033[0m Quit   "
       "\033[1mCtrl+C\033[0m Force Quit   "
-      "\033[1m↻\033[0m Auto-refresh\n"
+      "\033[1m↻\033[0m Auto-refresh   "
+      "\033[1mf\033[0m Filter Topics\n"
     )
     print(footer)
-    print("\nPress Ctrl+C to exit.\n")
+    # If user is editing filter, reprint the input prompt line without clearing screen
+    if self.filter_editing:
+      self.print_input_prompt(self.filter_text or "")
 
 
   def setup_terminal(self):
@@ -211,18 +227,109 @@ class TopicSniffer(Node):
     return None
   
   def handle_keys(self):
+    """Check for keypresses and handle filter input non-blocking."""
     key = self.poll_keyboard()
     if not key or self._exit_requested:
       return
 
-    # ESC key
+    # ESC key: quit
     if key == '\x1b':
       print("\nESC pressed — exiting.")
       self._exit_requested = True
+      return
+
+    # Start filter mode
+    elif key == 'f' and not self.filter_editing:
+      self.filter_editing = True
+      self.filter_input_buffer = ""
+      self.get_logger().info("Enter filter text (prefix with '!' to exclude): ")
+      return
+
+    # If we're editing filter, process keys
+    if self.filter_editing:
+      # Enter key finishes editing
+      if key in ('\r', '\n'):
+        self.filter_editing = False
+        self.apply_filter(self.filter_input_buffer)
+        print()  # Move to next line after input
+      # Backspace
+      elif key == '\x7f':
+        self.filter_input_buffer = self.filter_input_buffer[:-1]
+      # Regular character
+      elif len(key) == 1 and key.isprintable():
+        self.filter_input_buffer += key
+
+      # Apply filter live as user types
+      self.apply_filter(self.filter_input_buffer, live=True)
 
   def check_exit(self):
     if self._exit_requested:
       rclpy.shutdown()
+
+  def get_filter_input(self):
+    """Prompt user for a filter string, updating dynamically."""
+    filter_text = self.filter_text or ""
+    self.filter_editing = True
+    self.display_rates()  # Initial display with prompt
+
+    try:
+        while True:
+          ch = self.poll_keyboard()
+          if ch is None:
+            time.sleep(0.05)
+            continue
+
+          if ch == '\x1b':  # ESC cancels
+            self.filter_editing = False
+            return None
+          elif ch == '\x7f':  # Backspace
+            filter_text = filter_text[:-1]
+          elif ch in ('\r', '\n'):  # Enter finishes input
+            break
+          else:
+            filter_text += ch
+
+          # Update dynamically without clearing the prompt
+          self.filter_text = filter_text
+          self.display_rates()
+
+        # Finalize filter after Enter
+        if filter_text.startswith('!'):
+          self.filter_invert = True
+          self.filter_text = filter_text[1:]
+        else:
+          self.filter_invert = False
+          self.filter_text = filter_text
+
+        self.filter_editing = False
+        self.display_rates()
+        print()  # move to new line after input
+        return filter_text
+
+    except KeyboardInterrupt:
+      self.filter_editing = False
+      return None
+    
+  def print_input_prompt(self, filter_text):
+    """Print the current filter input in the terminal."""
+    print(f"\rFilter: {filter_text}", end='', flush=True)
+
+  def apply_filter(self, filter_text, live=False):
+    """Apply the filter based on user input. If live=True, suppress extra printing."""
+    if filter_text.startswith('!'):
+      self.filter_invert = True
+      self.filter_text = filter_text[1:]
+    else:
+      self.filter_invert = False
+      self.filter_text = filter_text
+
+    if not live:
+      print(f"Filtering topics: {'NOT ' if self.filter_invert else ''}containing '{self.filter_text}'")
+
+    # Display topics, but if live, keep the filter prompt visible
+    self.display_rates()
+    if self.filter_editing:
+      print(f"\rFilter: {self.filter_input_buffer}", end='', flush=True)
 
 def main(args=None):
   DISTRO = os.getenv("ROS_DISTRO")
